@@ -1,0 +1,4 @@
+.DS_Store
+__pycache__/
+# raw national county file (346 MB); the web copy is frontend/public/data/us_counties.geojson
+data/boundaries/*.geojson

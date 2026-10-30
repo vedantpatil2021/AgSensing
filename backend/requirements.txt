@@ -1,0 +1,5 @@
+fastapi
+uvicorn[standard]
+pyjwt[crypto]
+psycopg[binary]
+google-cloud-storage

@@ -1,0 +1,4 @@
+functions-framework
+globus-sdk
+google-cloud-storage
+psycopg[binary]
