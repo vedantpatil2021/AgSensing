@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { Pause, Play } from "lucide-react"
 import { RollingNumber } from "@/components/ui/rolling-number"
 import { TextureButton } from "@/components/ui/texture-button"
-import { YEARS, yearMeans, type Crop, type Meta } from "@/lib/api"
+import { FIRST_YEAR, HLS_FROM, LAST_YEAR, YEARS, yearMeans, type Crop, type Meta } from "@/lib/api"
 import { fmt } from "@/lib/constants"
 import { cn } from "@/lib/utils"
 
@@ -14,7 +14,7 @@ export function YearTimeline({ meta, crop, year, onYear }: { meta: Meta; crop: C
 
   useEffect(() => {
     if (!playing) return
-    const t = setTimeout(() => onYear(year >= 2019 ? 2009 : year + 1), 1000)
+    const t = setTimeout(() => onYear(year >= LAST_YEAR ? FIRST_YEAR : year + 1), 1000)
     return () => clearTimeout(t)
   }, [playing, year])
 
@@ -25,8 +25,8 @@ export function YearTimeline({ meta, crop, year, onYear }: { meta: Meta; crop: C
       </TextureButton>
       <div className="flex h-10 items-end gap-[3px]">
         {YEARS.map((y, i) => (
-          <button key={y} onClick={() => { setPlaying(false); onYear(y) }} title={`${y}: average ${fmt(means[i])} t/ha`} className="group flex flex-col items-center gap-1">
-            <div className={cn("w-6 rounded-sm transition-all", y === year ? "bg-neutral-900" : "bg-neutral-200 group-hover:bg-neutral-300")} style={{ height: 6 + ((means[i] - lo) / (hi - lo || 1)) * 20 }} />
+          <button key={y} onClick={() => { setPlaying(false); onYear(y) }} title={`${y}: average ${fmt(means[i])} t/ha${y >= HLS_FROM ? " (HLS)" : ""}`} className={cn("group flex flex-col items-center gap-1", y === HLS_FROM && "ml-1.5 border-l border-dashed pl-1.5")}>
+            <div className={cn("w-4 rounded-sm transition-all", y === year ? "bg-neutral-900" : y >= HLS_FROM ? "bg-sky-200 group-hover:bg-sky-300" : "bg-neutral-200 group-hover:bg-neutral-300")} style={{ height: 6 + ((means[i] - lo) / (hi - lo || 1)) * 20 }} />
             <span className={cn("text-[10px] tabular-nums", y === year ? "font-semibold text-foreground" : "text-muted-foreground")}>{String(y).slice(2)}</span>
           </button>
         ))}

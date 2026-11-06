@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# 30 m map layers (Cloud-Optimized GeoTIFFs, ~1.2 GB); rebuilt by scripts/build_demo_data.py, too large for git / GitHub Pages
+public/cog/

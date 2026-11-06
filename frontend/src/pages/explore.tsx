@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { AnimatePresence, motion } from "motion/react"
-import { Bean, Check, ChevronRight, CircleHelp, Code2, Loader2, MousePointerClick, Wheat, X } from "lucide-react"
+import { Bean, Check, ChevronRight, CircleHelp, Code2, Loader2, MousePointerClick, Sparkles, Wheat, X } from "lucide-react"
+import { Assistant } from "@/components/assistant"
 import type L from "leaflet"
 import { NeumorphEyebrow } from "@/components/ui/neumorph-eyebrow"
 import { RollingNumber } from "@/components/ui/rolling-number"
@@ -12,7 +13,7 @@ import { Tip, Tour, seen, type TourStep } from "@/components/guide"
 import { GeeDialog } from "@/components/gee-dialog"
 import { SiteHeader } from "@/components/site-header"
 import { YearTimeline } from "@/components/year-timeline"
-import { YEARS, useCounties, useMeta, valueAt, yearMeans, type Crop, type Meta } from "@/lib/api"
+import { FIRST_YEAR, HLS_FROM, LAST_YEAR, YEARS, modelFor, useCounties, useMeta, valueAt, yearMeans, type Crop, type Meta } from "@/lib/api"
 import { countyAt, countyInfo, countyTipHtml } from "@/lib/county"
 import { BU_PER_T, CROP_NAME, YEAR_NOTES, countyLabel, fmt } from "@/lib/constants"
 import { cn } from "@/lib/utils"
@@ -41,7 +42,9 @@ function Results({ meta, crop, year, county, setCounty, counties: fc }: { meta: 
   const st = meta.layers[`yield_${crop}_${year}`].stats
   const means = yearMeans(meta, crop), avg = means.reduce((a, b) => a + b) / means.length
   const diff = ((st.mean - avg) / avg) * 100
-  const metric = meta.models[crop].metrics[0]
+  const metric = modelFor(meta, crop, year).metrics[0]
+  const ahead = meta.forecast[crop].find((r) => r.horizon === 1)
+  const hls = year >= HLS_FROM
   const rows = meta.counties[crop]
   const counties = [...new Map(rows.map((r) => [String(r.GEOID), countyLabel(r)])).entries()].sort((a, b) => a[1].localeCompare(b[1]))
   const info = countyInfo(meta, fc, county, crop, year)
@@ -62,7 +65,7 @@ function Results({ meta, crop, year, county, setCounty, counties: fc }: { meta: 
           </div>
           <div className="mt-1 text-sm text-muted-foreground">≈ <b className="text-foreground"><RollingNumber value={Math.round(st.mean * BU_PER_T[crop])} /></b> bushels per acre</div>
           <div className={cn("mt-3 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold", diff >= 0 ? "bg-neutral-100 text-emerald-700" : "bg-red-50 text-red-700")}>
-            {diff >= 0 ? "▲" : "▼"} {Math.abs(diff).toFixed(0)}% {diff >= 0 ? "above" : "below"} the 2009–2019 average
+            {diff >= 0 ? "▲" : "▼"} {Math.abs(diff).toFixed(0)}% {diff >= 0 ? "above" : "below"} the {FIRST_YEAR}–{LAST_YEAR} average
           </div>
           <div className="mt-4 grid grid-cols-3 gap-2 text-foreground">
             {[["Fields mapped", `${Math.round((st.n * 0.09) / 1000)}k ha`, "All crop pixels: 30 m × 30 m = 0.09 ha each."],
@@ -99,9 +102,11 @@ function Results({ meta, crop, year, county, setCounty, counties: fc }: { meta: 
       <TextureCard>
         <div className="p-5">
           <div className="flex items-center gap-2 font-medium text-foreground">How accurate is this? <Tip text={`Tested on counties the model never saw. R² = ${fmt(metric.test_R2)}: it explains about ${Math.round(metric.test_R2 * 100)}% of the differences between counties.`} /></div>
+          {hls && <p className="mt-2 rounded-lg bg-sky-50 px-2.5 py-1.5 text-xs text-sky-800">From {HLS_FROM} the map uses newer satellite data (HLS: Landsat + Sentinel-2) and a model trained on it. Compare years before and after {HLS_FROM} with care.</p>}
           <p className="mt-2 text-sm leading-relaxed">County estimates are usually within <b className="text-foreground">±{fmt(metric.test_RMSE, 1)} t/ha</b> (about ±{Math.round(metric.test_RMSE * BU_PER_T[crop])} bu/acre) of USDA numbers. Single fields can be off by more.</p>
           <div className="mt-3 flex gap-1">{Array.from({ length: 10 }, (_, i) => <div key={i} className={cn("h-2 flex-1 rounded-full", i < Math.round(metric.test_R2 * 10) ? "bg-neutral-900" : "bg-muted")} />)}</div>
           <div className="mt-1 flex justify-between text-[11px]"><span>rough guess</span><span>perfect</span></div>
+          {ahead && <p className="mt-3 border-t pt-2.5 text-xs leading-relaxed">Forecasting a <b className="text-foreground">new season</b> (trained only on earlier years) is harder: typical error ±{fmt(ahead.RMSE, 1)} t/ha, and the model ranks counties correctly about {Math.round(ahead.within_year_r * 100)}% of the way (r = {fmt(ahead.within_year_r)}).</p>}
         </div>
       </TextureCard>
     </>
@@ -120,6 +125,7 @@ export default function Explore() {
   const [inspect, setInspect] = useState<{ lat: number; lng: number; v: number | null; county: string | null } | null>(null)
   const counties = useCounties()
   const [county, setCounty] = useState<string | null>(null)
+  const [chat, setChat] = useState(false)
   const [gee, setGee] = useState(false)
   const [tour, setTour] = useState(() => !seen.get("ys_explore_tour"))
   const mapRef = useRef<L.Map | null>(null)
@@ -152,9 +158,9 @@ export default function Explore() {
   }
   const steps: TourStep[] = [
     { target: "crop", title: "First, pick a crop", text: "Corn or soybean. The map shows only fields of that crop." },
-    { target: "year", title: "Then pick a year", text: "Any season from 2009 to 2019. The small bars show how good each year was; 2012 was a drought." },
+    { target: "year", title: "Then pick a year", text: `Any season from ${FIRST_YEAR} to ${LAST_YEAR}. The small bars show how good each year was; 2012 was a drought. Blue bars (${HLS_FROM} on) use newer satellite data.` },
     { target: "show", title: "Show the map", text: "Press the button once. After that the map follows whatever crop or year you pick." },
-    { target: "map", title: "Read the map", text: "Green is higher yield, red is lower. Hover or click a county for its numbers (untick County boundaries to hide them), click a field for its yield, or press play to watch every year." },
+    { target: "map", title: "Read the map", text: "Green is higher yield, red is lower. Zoom in as far as you like: every 30 m pixel stays sharp. Hover or click a county for its numbers (untick County boundaries to hide them), click a field for its yield, or press play to watch every year." },
     { target: "studio", title: "Go further in Studio", text: "For researchers: write Python Earth Engine code, run the yield models on any year, inspect pixels and export maps. Your Explore map is always one click back." },
     { target: "help", title: "Help is always here", text: "The small ? marks explain terms in plain words. Help replays this tour." },
   ]
@@ -164,9 +170,10 @@ export default function Explore() {
       <SiteHeader sub="Explore · yield maps">
         <span data-tour="help"><TextureButton variant="minimal" className="w-auto" onClick={() => setTour(true)}><CircleHelp size={15} /> Help</TextureButton></span>
         <Tip below text="Write Earth Engine code, export maps and more."><span data-tour="studio" className="block"><TextureButton variant="minimal" className="w-auto" onClick={() => navigate("/studio")}><Code2 size={15} /> Studio</TextureButton></span></Tip>
+        <TextureButton variant="minimal" aria-pressed={chat} className={cn("w-auto", chat && "ring-2 ring-neutral-900/20")} onClick={() => setChat(!chat)}><Sparkles size={15} /> Assistant</TextureButton>
       </SiteHeader>
 
-      <main className="grid min-h-0 flex-1 lg:grid-cols-[440px_1fr]">
+      <main className={cn("grid min-h-0 flex-1", chat ? "lg:grid-cols-[400px_minmax(0,1fr)_380px]" : "lg:grid-cols-[440px_minmax(0,1fr)]")}>
         <div className="space-y-3 p-4 text-muted-foreground sm:p-5 lg:overflow-auto">
           <div className="px-1 pb-1">
             <h1 className="text-2xl font-semibold tracking-tight text-foreground">How much did the fields produce?</h1>
@@ -191,7 +198,7 @@ export default function Explore() {
               {YEARS.map((y, i) => (
                 <button key={y} onClick={() => setYear(y)} title={YEAR_NOTES[y]}
                   className={cn("flex flex-col items-center rounded-xl border pb-1 pt-1.5 transition hover:-translate-y-0.5", y === year ? "border-neutral-900 bg-neutral-100 text-foreground" : "bg-white hover:border-neutral-400")}>
-                  <span className="flex h-5 items-end">{crop && <span className={cn("w-4 rounded-sm", y === 2012 ? "bg-amber-500" : "bg-neutral-300")} style={{ height: 4 + ((means[i] - Math.min(...means)) / (Math.max(...means) - Math.min(...means))) * 16 }} />}</span>
+                  <span className="flex h-5 items-end">{crop && <span className={cn("w-4 rounded-sm", y === 2012 ? "bg-amber-500" : y >= HLS_FROM ? "bg-sky-300" : "bg-neutral-300")} style={{ height: 4 + ((means[i] - Math.min(...means)) / (Math.max(...means) - Math.min(...means))) * 16 }} />}</span>
                   <span className="mt-0.5 text-sm font-medium tabular-nums">{y}</span>
                 </button>
               ))}
@@ -215,7 +222,7 @@ export default function Explore() {
         <div data-tour="map" className="relative h-[70vh] min-h-[420px] lg:h-auto">
           <MapView meta={meta} layers={layers} basemap={basemap} onClick={onMapClick} marker={inspect && [inspect.lat, inspect.lng]} mapRef={mapRef}
             counties={counties} selected={county} countyTip={countyTip} showCounties={showCounties} />
-          {!shown && <div className="glass absolute bottom-6 left-1/2 z-[1000] w-max max-w-[calc(100%-24px)] -translate-x-1/2 px-4 py-2.5 text-sm text-muted-foreground md:max-w-[calc(100%-440px)]"><b className="font-medium text-foreground">Your map will appear here.</b> Pick a crop and a year, then press Show the yield map.</div>}
+          {!shown && <div className="glass absolute bottom-6 left-3 z-[1000] max-w-[calc(100%-24px)] px-4 py-2.5 text-sm text-muted-foreground sm:max-w-[min(420px,calc(100%-270px))]"><b className="font-medium text-foreground">Your map will appear here.</b> Pick a crop and a year, then press Show the yield map.</div>}
           {loading && <div className="absolute inset-0 z-[1100] flex items-center justify-center bg-white/40"><div className="glass flex items-center gap-2 px-4 py-3 text-sm"><Loader2 size={15} className="animate-spin" /> Making your map…</div></div>}
           <AnimatePresence>
             {shown && !loading && (
@@ -238,6 +245,7 @@ export default function Explore() {
           {shown && ready && <div className="absolute bottom-24 left-1/2 z-[1000] hidden -translate-x-1/2 md:block lg:bottom-6"><YearTimeline meta={meta} crop={crop} year={year} onYear={setYear} /></div>}
           <div className="absolute bottom-16 right-3 z-[1000] flex flex-col items-end gap-2"><CountiesToggle checked={showCounties} onChange={setShowCounties} /><BasemapSwitch value={basemap} onChange={setBasemap} /></div>
         </div>
+        {chat && <Assistant meta={meta} context={{ page: "explore", crop: shown ? crop : null, year: shown ? year : null, county }} onClose={() => setChat(false)} />}
       </main>
 
       {tour && <Tour steps={steps} onClose={() => { setTour(false); seen.set("ys_explore_tour") }} />}

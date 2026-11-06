@@ -55,3 +55,6 @@
 .leaflet-tooltip.county-tip::before { display: none; }
 .place-pin { width: 22px; height: 22px; background: #ea4335; border: 2px solid #fff; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); box-shadow: 0 2px 6px rgb(0 0 0 / 0.3); }
 .leaflet-control-scale-line { border-color: #374151; color: #374151; background: rgb(255 255 255 / 0.8); }
+.ys-shimmer { background: linear-gradient(90deg, #a3a3a3 0%, #171717 50%, #a3a3a3 100%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: ys-shimmer 1.6s linear infinite; }
+@keyframes ys-shimmer { from { background-position: 100% 0 } to { background-position: -100% 0 } }
+@media (prefers-reduced-motion: reduce) { .ys-shimmer { animation: none; color: #737373; } }

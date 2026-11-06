@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import Editor, { type OnMount } from "@monaco-editor/react"
 import { motion } from "motion/react"
-import { CheckCircle2, ChevronRight, CircleHelp, Database, FileCode2, Globe, Layers, Loader2, MapPin, Play, Sprout, Upload, Wand2 } from "lucide-react"
+import { CheckCircle2, ChevronRight, CircleHelp, Database, FileCode2, Globe, Layers, Loader2, MapPin, Play, Sparkles, Sprout, Upload, Wand2 } from "lucide-react"
+import { Assistant } from "@/components/assistant"
 import type L from "leaflet"
 import { TextureButton } from "@/components/ui/texture-button"
 import { TextureCard } from "@/components/ui/texture-card"
@@ -12,7 +13,7 @@ import { GeeDialog } from "@/components/gee-dialog"
 import { Segmented } from "@/components/segmented"
 import { SiteHeader } from "@/components/site-header"
 import { YearTimeline } from "@/components/year-timeline"
-import { YEARS, useCounties, useMeta, valueAt, type Crop, type Meta } from "@/lib/api"
+import { FIRST_YEAR, HLS_FROM, LAST_YEAR, YEARS, modelFor, useCounties, useMeta, valueAt, type Crop, type Meta } from "@/lib/api"
 import { countyAt, countyInfo, countyTipHtml } from "@/lib/county"
 import { CROP_NAME, PROJECT, countyLabel, fmt } from "@/lib/constants"
 import { LAYERS, layerKind, statements, stringsIn, studioScripts } from "@/lib/scripts"
@@ -73,8 +74,8 @@ function LogLine({ meta, log }: { meta: Meta; log: Log }) {
 
 function ModelPanel({ meta, onPredict }: { meta: Meta; onPredict: (crop: Crop, year: number) => void }) {
   const [crop, setCrop] = useState<Crop>("corn")
-  const [year, setYear] = useState(2019)
-  const m = meta.models[crop], sign = (v: number) => `${v < 0 ? "−" : "+"} ${Math.abs(v).toFixed(Math.abs(v) < 0.1 ? 4 : 2)}`
+  const [year, setYear] = useState(LAST_YEAR)
+  const m = modelFor(meta, crop, year), sign = (v: number) => `${v < 0 ? "−" : "+"} ${Math.abs(v).toFixed(Math.abs(v) < 0.1 ? 4 : 2)}`
   return (
     <div className="space-y-4 text-sm">
       <p className="rounded-xl bg-neutral-100 px-3 py-2 text-emerald-700">No code needed: choose and press Predict.</p>
@@ -83,7 +84,7 @@ function ModelPanel({ meta, onPredict }: { meta: Meta; onPredict: (crop: Crop, y
         {YEARS.map((y) => <button key={y} onClick={() => setYear(y)} className={cn("rounded-lg border py-1 text-xs tabular-nums transition", y === year ? "border-neutral-900 bg-neutral-100 font-semibold" : "bg-white hover:border-neutral-400")}>{y}</button>)}
       </div>
       <div className="space-y-1.5">
-        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">Models <Tip text="Test R² is the share of county-to-county differences explained (1 is perfect). RMSE is the typical error in t/ha." /></div>
+        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">Models · {year >= HLS_FROM ? `HLS, trained 2013–${LAST_YEAR}` : "HISTARFM, trained 2009–2019 (paper)"} <Tip text="Test R² is the share of county-to-county differences explained (1 is perfect). RMSE is the typical error in t/ha." /></div>
         {m.metrics.map((r) => (
           <div key={r.model} className={cn("rounded-xl border px-3 py-2", r.model === "MLR" ? "border-neutral-900 bg-neutral-50" : "bg-white")}>
             <div className="flex items-center text-foreground">{{ MLR: "Linear regression", RF: "Random forest", SVM: "SVM (radial)" }[r.model]}
@@ -108,6 +109,7 @@ export default function Studio() {
   const [file, setFile] = useState("1_vegetation_index.py")
   const [left, setLeft] = useState<"scripts" | "models" | "assets">("scripts")
   const [right, setRight] = useState<"inspector" | "console" | "tasks">("console")
+  const [chat, setChat] = useState(false)
   const [layers, setLayers] = useState<MapLayer[]>([])
   const [logs, setLogs] = useState<Log[]>([{ id: uid++, type: "note", text: "Output appears here. Press Run (⌘/Ctrl + Enter) to start." }])
   const [tasks, setTasks] = useState<Task[]>([])
@@ -145,11 +147,12 @@ export default function Studio() {
     setRight("console")
     const t0 = performance.now(), code = files[file]
     const crop = ((code.match(/\bcrop\s*=\s*["'](corn|soybean)["']/) || [])[1] || "corn") as Crop
-    const year = +((code.match(/\byear\s*=\s*(\d{4})/) || [])[1] || 2019)
+    const year = +((code.match(/\byear\s*=\s*(\d{4})/) || [])[1] || LAST_YEAR)
     log({ type: "cmd", text: `python ${file}` })
     setStatus({ mode: "running", text: "Sending script to Earth Engine" })
     await sleep(400)
-    if (year < 2009 || year > 2019) { log({ type: "error", text: `No data for ${year} (HISTARFM covers 2009–2021; this demo has 2009–2019).` }); return finish(t0, false, "Script error") }
+    if (year < FIRST_YEAR || year > LAST_YEAR) { log({ type: "error", text: `No data for ${year}: maps cover ${FIRST_YEAR}–${LAST_YEAR} (HISTARFM to 2019, HLS from ${HLS_FROM}).` }); return finish(t0, false, "Script error") }
+    if (year >= HLS_FROM) log({ type: "note", text: `${year}: greenness from HLS (Landsat + Sentinel-2), model trained on HLS.` })
     for (const s of statements(code)) {
       if (/^ee\.Initialize/.test(s)) log({ type: "note", text: `Connected · project ${PROJECT}` })
       else if (/^Map\.centerObject/.test(s)) mapRef.current?.flyToBounds(meta.layers.yield_corn_2019.bounds, { padding: [30, 30], duration: 1 })
@@ -157,6 +160,7 @@ export default function Studio() {
         const kind = layerKind(s.split(",")[0]) ?? layerKind(s)
         if (!kind) { log({ type: "error", text: `No tiles for "${stringsIn(s).pop()}" in the demo.` }); continue }
         const info = LAYERS[kind](crop, year)
+        if (!meta.layers[info.key]) { log({ type: "error", text: `No GeoTIFF for ${info.name}: the source file is missing from data/gee_export.` }); continue }
         setStatus({ mode: "running", text: `getMapId · ${info.band}` })
         await sleep(600)
         addLayer(info.key, info.name)
@@ -165,8 +169,9 @@ export default function Studio() {
         await sleep(200)
         if (/\.size\(\)/.test(s)) log({ type: "text", text: label, value: 14 })
         else if (kind && /reduceRegion/.test(s)) {
-          const info = LAYERS[kind](crop, year), st = meta.layers[info.key].stats
-          log({ type: "object", label, value: /mean\(\)/.test(s) ? { [info.band]: st.mean } : { [`${info.band}_min`]: st.min, [`${info.band}_max`]: st.max } })
+          const info = LAYERS[kind](crop, year), st = meta.layers[info.key]?.stats
+          if (!st) log({ type: "error", text: `No GeoTIFF for ${info.name}.` })
+          else log({ type: "object", label, value: /mean\(\)/.test(s) ? { [info.band]: st.mean } : { [`${info.band}_min`]: st.min, [`${info.band}_max`]: st.max } })
         } else log({ type: "text", text: label })
       } else if (/Export\.image/.test(s)) {
         const desc = ((s.match(/description\s*=\s*f?["']([^"']+)/) || [])[1] ?? `${crop}_${year}`).replace("{crop}", crop).replace("{year}", String(year))
@@ -183,8 +188,8 @@ export default function Studio() {
     if (!meta || busy.current) return
     busy.current = true
     setRight("console")
-    const t0 = performance.now(), st = meta.layers[`yield_${crop}_${year}`].stats, metric = meta.models[crop].metrics[0]
-    log({ type: "cmd", text: `predict --crop ${crop} --year ${year} --model MLR` })
+    const t0 = performance.now(), st = meta.layers[`yield_${crop}_${year}`].stats, metric = modelFor(meta, crop, year).metrics[0]
+    log({ type: "cmd", text: `predict --crop ${crop} --year ${year} --model MLR${year >= HLS_FROM ? " --source hls" : ""}` })
     for (const text of ["Building predictors", `Masking to ${crop} fields`, "Applying MLR to 30 m pixels"]) { setStatus({ mode: "running", text }); await sleep(500) }
     addLayer(`yield_${crop}_${year}`, `Predicted ${crop} yield ${year}`, "prediction")
     setPredicted({ crop, year })
@@ -238,13 +243,16 @@ export default function Studio() {
         </div>
         <TextureButton variant="minimal" className="w-auto" onClick={() => setTour(true)}><CircleHelp size={15} /> Help</TextureButton>
         <TextureButton variant="minimal" className="w-auto" onClick={() => navigate("/explore")}><Wand2 size={15} /> Explore</TextureButton>
+        <TextureButton variant="minimal" aria-pressed={chat} className={cn("w-auto", chat && "ring-2 ring-neutral-900/20")} onClick={() => setChat(!chat)}><Sparkles size={15} /> Assistant</TextureButton>
         <Tip below text={predicted ? "Code that shows this map in the Earth Engine Code Editor" : "Predict a map in Models first"}>
           <TextureButton variant="minimal" className="w-auto disabled:opacity-50" disabled={!predicted} onClick={() => setGee(predicted)}><Globe size={15} /> Show in GEE</TextureButton>
         </Tip>
         <TextureButton variant="primary" className="w-auto" onClick={run}><Play size={14} /> Run</TextureButton>
       </SiteHeader>
 
-      <div className="grid min-h-0 grid-cols-[290px_1fr_370px]" style={{ height: "45vh" }}>
+      <div className="flex min-h-0 flex-1">
+      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="grid min-h-0 grid-cols-[290px_minmax(0,1fr)_370px]" style={{ height: "45vh" }}>
         <aside data-tour="left" className="flex min-h-0 flex-col border-r bg-white">
           <Segmented className="m-2.5" value={left} onChange={setLeft} options={[["scripts", "Scripts"], ["models", "Models"], ["assets", `Assets${assets.length ? ` ${assets.length}` : ""}`]]} />
           <div className="flex-1 overflow-auto px-3 pb-4">
@@ -350,6 +358,9 @@ export default function Studio() {
           </div>
         )}
         <div className="absolute bottom-16 right-3 z-[1000] flex flex-col items-end gap-2"><CountiesToggle checked={showCounties} onChange={setShowCounties} /><BasemapSwitch value={basemap} onChange={setBasemap} /></div>
+      </div>
+      </div>
+      {chat && <Assistant meta={meta} context={{ page: "studio", crop: predicted?.crop, year: predicted?.year, county: inspect?.county }} onClose={() => setChat(false)} />}
       </div>
 
       {tour && <Tour steps={steps} onClose={() => { setTour(false); seen.set("ys_studio_tour"); setLeft("scripts") }} />}

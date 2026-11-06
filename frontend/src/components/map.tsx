@@ -2,6 +2,7 @@ import L from "leaflet"
 import { useEffect, useRef, useState } from "react"
 import { ChevronRight, Layers, Loader2, MapPin, Search, X } from "lucide-react"
 import type { Bounds, Meta } from "@/lib/api"
+import { GeoTiffLayer } from "@/lib/geotiff-layer"
 import { cn } from "@/lib/utils"
 
 export type MapLayer = { id: string; key: string; name: string; visible: boolean; opacity: number }
@@ -9,6 +10,8 @@ export type MapLayer = { id: string; key: string; name: string; visible: boolean
 const esri = (service: string) => `https://server.arcgisonline.com/ArcGIS/rest/services/${service}/MapServer/tile/{z}/{y}/{x}`
 /** Base tiles under the data, label tiles over it (so place names stay readable on top of a yield map). */
 const ESRI = "Tiles &copy; Esri"
+/** Zoom 18 is about 0.6 m per screen pixel here, so a 30 m pixel is a ~50 px square. */
+const MAX_ZOOM = 18
 /** All free, no key. Map, Terrain and Satellite mirror Google's three map types. */
 export const BASEMAPS: Record<"Map" | "Terrain" | "Satellite" | "Plain", { base: string; labels: string[]; credit: string }> = {
   Map: { base: esri("World_Street_Map"), labels: [], credit: ESRI },
@@ -40,7 +43,7 @@ type Props = {
 export function MapView({ meta, layers, basemap, onClick, marker, mapRef, counties, selected, onCounty, countyTip, showCounties = false }: Props) {
   const div = useRef<HTMLDivElement>(null)
   const map = useRef<L.Map | null>(null)
-  const overlays = useRef<Record<string, { key: string; ov: L.ImageOverlay }>>({})
+  const overlays = useRef<Record<string, { key: string; ov: GeoTiffLayer }>>({})
   const base = useRef<L.TileLayer[]>([])
   const countyLayer = useRef<L.GeoJSON | null>(null)
   const hovered = useRef<string | null>(null)
@@ -52,10 +55,11 @@ export function MapView({ meta, layers, basemap, onClick, marker, mapRef, counti
   const study = meta.layers.yield_corn_2019.bounds as Bounds
 
   useEffect(() => {
-    const m = L.map(div.current!, { zoomControl: false, maxZoom: 16 }).setView([41.2, -84.4], 8)
+    const m = L.map(div.current!, { zoomControl: false, maxZoom: MAX_ZOOM }).setView([41.2, -84.4], 8)
     L.control.zoom({ position: "topleft" }).addTo(m)
     L.control.scale({ position: "bottomright" }).addTo(m)
-    m.createPane("counties").style.zIndex = "450"     // above the yield overlays (400)
+    m.createPane("data").style.zIndex = "400"         // GeoTIFF layers, above the base map
+    m.createPane("counties").style.zIndex = "450"     // above the data layers
     const labels = m.createPane("labels")
     labels.style.zIndex = "460"
     labels.style.pointerEvents = "none"
@@ -75,8 +79,8 @@ export function MapView({ meta, layers, basemap, onClick, marker, mapRef, counti
     base.current.forEach((t) => t.remove())
     const { base: url, labels, credit } = BASEMAPS[basemap]
     base.current = [
-      L.tileLayer(url, { attribution: credit, maxZoom: 16 }).addTo(map.current!),
-      ...labels.map((u) => L.tileLayer(u, { pane: "labels", maxZoom: 16 }).addTo(map.current!)),
+      L.tileLayer(url, { attribution: credit, maxZoom: MAX_ZOOM, maxNativeZoom: 18 }).addTo(map.current!),
+      ...labels.map((u) => L.tileLayer(u, { pane: "labels", maxZoom: MAX_ZOOM }).addTo(map.current!)),
     ]
     base.current[0].bringToBack()
   }, [basemap])
@@ -128,11 +132,14 @@ export function MapView({ meta, layers, basemap, onClick, marker, mapRef, counti
     const ids = new Set(layers.map((l) => l.id))
     for (const [id, o] of Object.entries(overlays.current)) if (!ids.has(id)) { o.ov.remove(); delete overlays.current[id] }
     layers.forEach((l, i) => {
+      if (!meta.layers[l.key]) return     // no GeoTIFF for this layer
       let o = overlays.current[l.id]
       if (!o || o.key !== l.key) {
         o?.ov.remove()
-        const layer = meta.layers[l.key]
-        o = overlays.current[l.id] = { key: l.key, ov: L.imageOverlay(layer.url, layer.bounds, { interactive: false }).addTo(map.current!) }
+        const layer = meta.layers[l.key], pal = meta.palettes[layer.kind]
+        const ov = new GeoTiffLayer(layer.url, { colors: pal.colors, min: pal.min, max: pal.max, scale: layer.scale, nodata: layer.nodata },
+          { pane: "data", bounds: L.latLngBounds(layer.bounds), maxZoom: MAX_ZOOM })
+        o = overlays.current[l.id] = { key: l.key, ov: ov.addTo(map.current!) }
       }
       o.ov.setOpacity(l.visible ? l.opacity : 0)
       o.ov.setZIndex(10 + i)
@@ -205,7 +212,7 @@ function PlaceSearch({ map }: { map: React.RefObject<L.Map | null> }) {
 }
 
 export function Legend({ meta, layer, plain }: { meta: Meta; layer?: MapLayer; plain?: boolean }) {
-  if (!layer) return null
+  if (!layer || !meta.layers[layer.key]) return null
   const pal = meta.palettes[meta.layers[layer.key].kind]
   return (
     <div className="glass w-60 px-3.5 py-3">

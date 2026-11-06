@@ -1,22 +1,31 @@
 /**
- * Data access. Today it reads the static files written by scripts/build_demo_data.py;
- * the FastAPI backend will serve the same shapes (map tiles from Earth Engine getMapId).
+ * Data access. Today it reads the static files written by scripts/build_demo_data.py (map layers are
+ * Cloud-Optimized GeoTIFFs in public/cog/); the FastAPI backend will serve the same shapes.
  */
 import { useEffect, useState } from "react"
+import { pixelAt } from "./geotiff-layer"
 
 export type Crop = "corn" | "soybean"
 export type Bounds = [[number, number], [number, number]]
 export type Stats = { mean: number; min: number; max: number; n: number }
-export type Layer = { kind: string; url: string; bounds: Bounds; stats: Stats }
+/** A map layer: a GeoTIFF whose stored integers are value x scale, with nodata where there is no crop. */
+export type Layer = { kind: string; url: string; bounds: Bounds; stats: Stats; scale: number; nodata: number; source: "HISTARFM" | "HLS" | "PRISM" }
 export type Palette = { colors: string[]; min: number; max: number; unit: string }
 export type CountyRow = { GEOID: number; name: string; year: number; obs: number; pred: number }
 export type Metric = { model: "MLR" | "RF" | "SVM"; test_R2: number; test_RMSE: number; test_MAE: number }
 export type Model = { intercept: number; coef: Record<string, number>; metrics: Metric[] }
+export type ForecastRow = { horizon: number; n: number; RMSE: number; R2: number; bias: number; within_year_r: number }
 export type Meta = {
+  years: number[]
+  /** First year mapped with HLS greenness and the HLS-trained model (earlier years: HISTARFM and the paper model) */
+  hlsFrom: number
   layers: Record<string, Layer>
   palettes: Record<string, Palette>
   counties: Record<Crop, CountyRow[]>
   models: Record<Crop, Model>
+  modelsHls: Record<Crop, Model>
+  /** Forward test of the HLS model: trained on years up to T, scored on T+1..T+3 */
+  forecast: Record<Crop, ForecastRow[]>
   scan: { crop: Crop; year: number; cols: number; rows: number; values: (number | null)[] }
   /** Each county's mean of the 30-m map: countyMaps[crop][year][GEOID] = [t/ha, pixels] */
   countyMaps: Record<Crop, Record<string, Record<string, [number, number]>>>
@@ -45,39 +54,17 @@ export function useCounties() {
 
 export const paletteOf = (meta: Meta, key: string) => meta.palettes[meta.layers[key].kind]
 export const yearMeans = (meta: Meta, crop: Crop) => YEARS.map((y) => meta.layers[`yield_${crop}_${y}`].stats.mean)
-export const YEARS = Array.from({ length: 11 }, (_, i) => 2009 + i)
+export const YEARS = Array.from({ length: 17 }, (_, i) => 2009 + i)     // 2009-2025; must match meta.years
+export const HLS_FROM = 2020
+export const FIRST_YEAR = YEARS[0], LAST_YEAR = YEARS[YEARS.length - 1]
+/** The model (and satellite source) behind a year's map. */
+export const modelFor = (meta: Meta, crop: Crop, year: number) => (year >= meta.hlsFrom ? meta.modelsHls[crop] : meta.models[crop])
+export const sourceOf = (year: number) => (year >= HLS_FROM ? "HLS" : "HISTARFM")
 
-/* Pixel value under a point: read the layer image and invert its palette. */
-const pixels: Record<string, Promise<ImageData>> = {}
-function loadPixels(url: string) {
-  return (pixels[url] ??= new Promise((resolve) => {
-    const img = new Image()
-    img.onload = () => {
-      const c = document.createElement("canvas")
-      c.width = img.width
-      c.height = img.height
-      const ctx = c.getContext("2d")!
-      ctx.drawImage(img, 0, 0)
-      resolve(ctx.getImageData(0, 0, img.width, img.height))
-    }
-    img.src = url
-  }))
-}
-
+/** Value of the full-resolution 30 m pixel under a point (read from the layer's GeoTIFF), or null where there is no data. */
 export async function valueAt(meta: Meta, key: string, lat: number, lng: number) {
   const layer = meta.layers[key]
-  const [[s, w], [n, e]] = layer.bounds
-  if (lat < s || lat > n || lng < w || lng > e) return null
-  const px = await loadPixels(layer.url)
-  const col = Math.min(px.width - 1, Math.floor(((lng - w) / (e - w)) * px.width))
-  const row = Math.min(px.height - 1, Math.floor(((n - lat) / (n - s)) * px.height))
-  const i = (row * px.width + col) * 4
-  if (px.data[i + 3] === 0) return null
-  const pal = meta.palettes[layer.kind]
-  let best = 0, bestDist = Infinity
-  pal.colors.forEach((hex, j) => {
-    const d = [1, 3, 5].reduce((sum, k, c) => sum + (parseInt(hex.slice(k, k + 2), 16) - px.data[i + c]) ** 2, 0)
-    if (d < bestDist) { bestDist = d; best = j }
-  })
-  return pal.min + (best / (pal.colors.length - 1)) * (pal.max - pal.min)
+  if (!layer) return null
+  const v = await pixelAt(layer.url, lat, lng)
+  return v == null || v === layer.nodata ? null : v / layer.scale
 }

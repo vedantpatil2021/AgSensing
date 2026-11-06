@@ -13,7 +13,7 @@ import ee
 ee.Initialize(project="${PROJECT}")
 
 crop = "corn"      # "corn" or "soybean"
-year = 2019        # 2009-2019
+year = 2019        # 2009-2019 (HISTARFM); 2020-2025 use HLS, see v1.0/GEE_Scripts/NDVI_EVI_HLS.js
 
 counties = ee.FeatureCollection("TIGER/2018/Counties").filter(ee.Filter.inList("GEOID", ${fipsList}))
 print("Counties selected:", counties.size())
